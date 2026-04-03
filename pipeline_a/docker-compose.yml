@@ -1,0 +1,137 @@
+services:
+  # ===== HDFS =====
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    environment:
+      - CLUSTER_NAME=basePipeline-cluster
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9870/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    volumes:
+      - datanode_data:/hadoop/dfs/data
+    depends_on:
+      namenode:
+        condition: service_healthy
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # ===== Kafka (KRaft mode) =====
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_HEAP_OPTS=-Xmx256m -Xms256m
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ===== Spark =====
+  spark-master:
+    image: bitnami/spark:3.5
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./processing:/opt/spark/work-dir
+    mem_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    volumes:
+      - ./processing:/opt/spark/work-dir
+    mem_limit: 1024m
+    restart: unless-stopped
+
+  # ===== PostgreSQL (Airflow metadata DB) =====
+  postgres:
+    image: postgres:13-alpine
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=pwd12345
+      - POSTGRES_DB=airflow_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    mem_limit: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d airflow_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Airflow =====
+  airflow:
+    image: apache/airflow:2.7.1-python3.10
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin:pwd12345@postgres:5432/airflow_db
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username admin --password admin
+          --firstname Admin --lastname User --role Admin
+          --email a@a.com || true &&
+        airflow scheduler &
+        exec airflow webserver
+      "
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./orchestration/dags:/opt/airflow/dags
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 1536m
+    restart: unless-stopped
+
+volumes:
+  namenode_data:
+  datanode_data:
+  kafka_data:
+  postgres_data:
