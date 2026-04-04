@@ -1,1 +1,5 @@
 data/
+*.csv
+*.csv:Zone.Identifier
+Makefile
+claude.md

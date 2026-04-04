@@ -1,0 +1,5 @@
+# Shared Python dependencies for the local pipeline scripts.
+# Airflow runs from its Docker image, so it is not managed here.
+
+confluent-kafka==2.5.0
+pyspark==3.5.1
