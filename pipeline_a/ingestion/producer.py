@@ -8,7 +8,6 @@ Reads hourly_fitbit_sema_df_unprocessed.csv and publishes events to four Kafka t
   wearable.profile  – demographic / goal fields (sent once per unique user)
 
 Run:
-    pip install -r requirements.txt
     python producer.py                         # default settings
     KAFKA_BOOTSTRAP=localhost:9092 DELAY=0.05 CSV_PATH=../hourly_fitbit_sema_df_unprocessed.csv python producer.py
 """
