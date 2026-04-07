@@ -1,27 +1,6 @@
 """
 BRONZE LAYER — Spark Structured Streaming ingest from Kafka to HDFS (Delta Lake).
-
-Responsibility (Bronze):
-  - Read raw events from Kafka with no business logic applied.
-  - Promote envelope fields (user_id, timestamps, event_type) for partitioning.
-  - Preserve `payload` as a raw JSON string — intentionally unparsed.
-  - Write append-only, partitioned Delta tables to the Bronze zone on HDFS.
-
-Reads from:
-  wearable.vitals / wearable.activity / wearable.context / wearable.profile
-
-Writes to:
-  hdfs://namenode:9000/data/bronze/wearable/<topic>/   (Delta format)
-
-Why Delta over plain Parquet:
-  - 30-second micro-batches produce many small files; Delta OPTIMIZE compacts them.
-  - Transaction log rolls back partial batch failures automatically.
-  - Time travel (VERSION AS OF) allows replay or audit of any past batch.
-  - Consistent format with Silver and Gold — no format boundary to cross.
-
-What this layer does NOT do (handled by downstream Silver job):
-  - Parse or type-cast the `payload` JSON fields.
-  - Validate, deduplicate, or clean records.
+See processing/README.md for full documentation.
 """
 
 import os
@@ -37,12 +16,14 @@ CHECKPOINT_BASE = os.getenv("CHECKPOINT_BASE", "hdfs://namenode:9000/checkpoints
 STARTING_OFFSETS = os.getenv("STARTING_OFFSETS", "earliest")
 
 TOPICS = "wearable.vitals,wearable.activity,wearable.context,wearable.profile"
+# Default 4 suits a single-node local setup. On a VPS set SHUFFLE_PARTITIONS
+# to 2× the total number of executor cores across all workers.
+SHUFFLE_PARTITIONS = os.getenv("SHUFFLE_PARTITIONS", "4")
 
 # ── Session ───────────────────────────────────────────────────────────────────
 spark = (
     SparkSession.builder.appName("WearableBronzeIngest")
-    .config("spark.sql.shuffle.partitions", "4") 
-    # fewer partitions for small data volume (Change to 72 for future benchmarking with larger datasets)
+    .config("spark.sql.shuffle.partitions", SHUFFLE_PARTITIONS)
     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
     .config("spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog")
