@@ -35,6 +35,7 @@ import json
 import os
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 
 from confluent_kafka import Producer
@@ -149,12 +150,14 @@ def _noisy(base: float, std: float, lo: float, hi: float) -> float:
     return round(max(lo, min(hi, random.gauss(base, std))), 3)
 
 
-def build_intraday_events(entry: dict, ts: str) -> dict[str, dict]:
+def build_intraday_events(entry: dict, ts: str, trace_id: str, source_timestamp: str) -> dict[str, dict]:
     base = {
         "user_id":         entry["user_id"],
         "event_date":      entry["event_date"],
         "event_hour":      entry["event_hour"],
         "event_timestamp": ts,
+        "source_timestamp": source_timestamp,
+        "trace_id":        trace_id,
         "source":          "synthetic_intraday",
     }
 
@@ -216,7 +219,9 @@ def main() -> None:
 
             for _ in range(users_per_tick):
                 entry  = next(pool_cycle)
-                events = build_intraday_events(entry, ts)
+                source_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                trace_id = uuid.uuid4().hex
+                events = build_intraday_events(entry, ts, trace_id, source_timestamp)
                 uid    = entry["user_id"]
 
                 for topic, event in events.items():

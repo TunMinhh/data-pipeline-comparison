@@ -195,6 +195,10 @@ def base_columns(df: DataFrame) -> DataFrame:
         # event_timestamp arrives as "YYYY-MM-DDTHH:00:00"; cast to TimestampType so that
         # malformed values become null and are caught by the dropna below.
         col("event_timestamp").cast(TimestampType()).alias("event_timestamp"),
+        # source_timestamp is produced by producer_realtime so end-to-end timing can
+        # use the original generation time for the synthetic intraday benchmark path.
+        col("source_timestamp").cast(TimestampType()).alias("source_timestamp"),
+        col("trace_id"),
         col("event_type"),
         col("payload"),
     )

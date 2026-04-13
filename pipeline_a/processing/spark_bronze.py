@@ -60,6 +60,8 @@ enriched_df = parsed_df.select(
     get_json_object(col("raw_json"), "$.event_date").alias("event_date"),
     get_json_object(col("raw_json"), "$.event_hour").alias("event_hour"),
     get_json_object(col("raw_json"), "$.event_timestamp").alias("event_timestamp"),
+    get_json_object(col("raw_json"), "$.source_timestamp").alias("source_timestamp"),
+    get_json_object(col("raw_json"), "$.trace_id").alias("trace_id"),
     get_json_object(col("raw_json"), "$.event_type").alias("event_type"),
     # payload is kept as a raw JSON string — Silver layer is responsible for parsing it
     get_json_object(col("raw_json"), "$.payload").alias("payload"),
