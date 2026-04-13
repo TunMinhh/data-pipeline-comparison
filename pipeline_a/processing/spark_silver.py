@@ -26,6 +26,10 @@ spark = (
     .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
     .config("spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    # Spark 3.5 enables ANSI mode by default — invalid casts (e.g. ">=30" → INT)
+    # throw exceptions instead of returning NULL.  Turning it off makes bad casts
+    # return NULL, which is then caught by dropna / range filters downstream.
+    .config("spark.sql.ansi.enabled", "false")
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")
@@ -88,6 +92,54 @@ PROFILE_SCHEMA = StructType([
     StructField("min_goal",        FloatType()),
     StructField("max_goal",        FloatType()),
     StructField("step_goal_label", StringType()),
+])
+
+# ── Schemas for daily producer topics ────────────────────────────────────────
+SLEEP_SCHEMA = StructType([
+    StructField("sleep_duration",         FloatType()),   # milliseconds
+    StructField("minutes_to_fall_asleep", FloatType()),
+    StructField("minutes_asleep",         FloatType()),
+    StructField("minutes_awake",          FloatType()),
+    StructField("minutes_after_wakeup",   FloatType()),
+    StructField("sleep_efficiency",       FloatType()),   # %
+    StructField("sleep_deep_ratio",       FloatType()),
+    StructField("sleep_wake_ratio",       FloatType()),
+    StructField("sleep_light_ratio",      FloatType()),
+    StructField("sleep_rem_ratio",        FloatType()),
+])
+
+HRV_SUMMARY_SCHEMA = StructType([
+    StructField("nremhr", FloatType()),   # heart rate during non-REM sleep
+    StructField("rmssd",  FloatType()),   # ms — root mean square of successive differences
+])
+
+BREATHING_SUMMARY_SCHEMA = StructType([
+    StructField("full_sleep_breathing_rate", FloatType()),   # breaths per minute
+])
+
+VITALS_DAILY_SCHEMA = StructType([
+    StructField("spo2",                         FloatType()),   # blood oxygen %
+    StructField("stress_score",                 FloatType()),
+    StructField("resting_hr",                   FloatType()),   # bpm
+    StructField("filtered_demographic_vo2max",  FloatType()),   # mL/kg/min
+    StructField("nightly_temperature",          FloatType()),   # °C relative
+    StructField("daily_temperature_variation",  FloatType()),
+    StructField("sleep_points_pct",             FloatType()),
+    StructField("exertion_points_pct",          FloatType()),
+    StructField("responsiveness_points_pct",    FloatType()),
+])
+
+# ── Schemas for synthetic real-time producer topics ───────────────────────────
+HEART_RATE_INTRADAY_SCHEMA = StructType([
+    StructField("bpm", FloatType()),
+])
+
+HRV_INTRADAY_SCHEMA = StructType([
+    StructField("rmssd", FloatType()),
+])
+
+BREATHING_INTRADAY_SCHEMA = StructType([
+    StructField("breaths_per_minute", FloatType()),
 ])
 
 
@@ -302,12 +354,253 @@ def process_profile() -> None:
     print("[silver] profile — done")
 
 
+# ── Daily topic process functions ─────────────────────────────────────────────
+def process_sleep() -> None:
+    bronze = read_bronze("sleep")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), SLEEP_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.sleep_duration").alias("sleep_duration_ms"),
+            col("p.minutes_to_fall_asleep").alias("minutes_to_fall_asleep"),
+            col("p.minutes_asleep").alias("minutes_asleep"),
+            col("p.minutes_awake").alias("minutes_awake"),
+            col("p.minutes_after_wakeup").alias("minutes_after_wakeup"),
+            col("p.sleep_efficiency").alias("sleep_efficiency"),
+            col("p.sleep_deep_ratio").alias("sleep_deep_ratio"),
+            col("p.sleep_wake_ratio").alias("sleep_wake_ratio"),
+            col("p.sleep_light_ratio").alias("sleep_light_ratio"),
+            col("p.sleep_rem_ratio").alias("sleep_rem_ratio"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(
+            (col("sleep_efficiency").isNull() | col("sleep_efficiency").between(0.0, 100.0)) &
+            (col("minutes_asleep").isNull()   | (col("minutes_asleep") >= 0))
+        )
+        .dropDuplicates(["user_id", "event_timestamp"])
+    )
+
+    merge_to_silver(clean, f"{HDFS_SILVER_BASE}/sleep")
+    print("[silver] sleep — done")
+
+
+def process_hrv_summary() -> None:
+    bronze = read_bronze("hrv_summary")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), HRV_SUMMARY_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.nremhr").alias("nremhr"),
+            col("p.rmssd").alias("rmssd"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(
+            (col("nremhr").isNull() | col("nremhr").between(30.0, 150.0)) &
+            (col("rmssd").isNull()  | col("rmssd").between(0.0, 300.0))
+        )
+        .dropDuplicates(["user_id", "event_timestamp"])
+    )
+
+    merge_to_silver(clean, f"{HDFS_SILVER_BASE}/hrv_summary")
+    print("[silver] hrv_summary — done")
+
+
+def process_breathing_summary() -> None:
+    bronze = read_bronze("breathing_summary")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), BREATHING_SUMMARY_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.full_sleep_breathing_rate").alias("breathing_rate"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(col("breathing_rate").isNull() | col("breathing_rate").between(5.0, 40.0))
+        .dropDuplicates(["user_id", "event_timestamp"])
+    )
+
+    merge_to_silver(clean, f"{HDFS_SILVER_BASE}/breathing_summary")
+    print("[silver] breathing_summary — done")
+
+
+def process_vitals_daily() -> None:
+    bronze = read_bronze("vitals_daily")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), VITALS_DAILY_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.spo2").alias("spo2"),
+            col("p.stress_score").alias("stress_score"),
+            col("p.resting_hr").alias("resting_hr"),
+            col("p.filtered_demographic_vo2max").alias("vo2max"),
+            col("p.nightly_temperature").alias("nightly_temperature"),
+            col("p.daily_temperature_variation").alias("daily_temperature_variation"),
+            col("p.sleep_points_pct").alias("sleep_points_pct"),
+            col("p.exertion_points_pct").alias("exertion_points_pct"),
+            col("p.responsiveness_points_pct").alias("responsiveness_points_pct"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(
+            (col("spo2").isNull()       | col("spo2").between(70.0, 100.0)) &
+            (col("resting_hr").isNull() | col("resting_hr").between(30.0, 150.0)) &
+            (col("stress_score").isNull()| col("stress_score").between(0.0, 100.0))
+        )
+        .dropDuplicates(["user_id", "event_timestamp"])
+    )
+
+    merge_to_silver(clean, f"{HDFS_SILVER_BASE}/vitals_daily")
+    print("[silver] vitals_daily — done")
+
+
+# ── Intraday topic process functions (append-only — high volume) ──────────────
+def append_to_silver(df, silver_path: str) -> None:
+    """
+    Append-only write for high-frequency intraday data.
+    MERGE would be too expensive for per-second volume; we accept
+    potential duplicate records on re-runs (synthetic data, acceptable).
+    Partitioned by event_date so downstream Gold reads are efficient.
+    """
+    (
+        df.write.format("delta")
+        .mode("append")
+        .partitionBy("event_date")
+        .save(silver_path)
+    )
+
+
+def process_heart_rate_intraday() -> None:
+    bronze = read_bronze("heart_rate_intraday")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), HEART_RATE_INTRADAY_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.bpm").alias("bpm"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(col("bpm").isNull() | col("bpm").between(30.0, 220.0))
+    )
+
+    append_to_silver(clean, f"{HDFS_SILVER_BASE}/heart_rate_intraday")
+    print("[silver] heart_rate_intraday — done")
+
+
+def process_hrv_intraday() -> None:
+    bronze = read_bronze("hrv_intraday")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), HRV_INTRADAY_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.rmssd").alias("rmssd"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(col("rmssd").isNull() | col("rmssd").between(0.0, 300.0))
+    )
+
+    append_to_silver(clean, f"{HDFS_SILVER_BASE}/hrv_intraday")
+    print("[silver] hrv_intraday — done")
+
+
+def process_breathing_intraday() -> None:
+    bronze = read_bronze("breathing_intraday")
+    if bronze is None:
+        return
+
+    parsed = base_columns(bronze).withColumn("p", from_json(col("payload"), BREATHING_INTRADAY_SCHEMA))
+
+    clean = (
+        parsed.select(
+            col("user_id"),
+            col("kafka_ingest_time"),
+            col("event_date"),
+            col("event_hour"),
+            col("event_timestamp"),
+            col("event_type"),
+            col("p.breaths_per_minute").alias("breaths_per_minute"),
+            current_timestamp().alias("processed_at"),
+        )
+        .dropna(subset=["user_id", "event_timestamp"])
+        .filter(col("breaths_per_minute").isNull() | col("breaths_per_minute").between(5.0, 40.0))
+    )
+
+    append_to_silver(clean, f"{HDFS_SILVER_BASE}/breathing_intraday")
+    print("[silver] breathing_intraday — done")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("[silver] Starting Silver transform …")
+    # Hourly topics
     process_vitals()
     process_activity()
     process_context()
     process_profile()
+    # Daily topics
+    process_sleep()
+    process_hrv_summary()
+    process_breathing_summary()
+    process_vitals_daily()
+    # Intraday synthetic topics
+    process_heart_rate_intraday()
+    process_hrv_intraday()
+    process_breathing_intraday()
     print("[silver] All topics processed.")
     spark.stop()

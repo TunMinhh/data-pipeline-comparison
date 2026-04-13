@@ -22,4 +22,6 @@ __pycache__/
 *.env.*
 *.log
 *.tmp
-*.swp               
+*.swp            
+.claude/
+*.pdf

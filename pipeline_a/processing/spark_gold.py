@@ -1,16 +1,16 @@
 """
-GOLD LAYER — Batch transformation: Silver Delta → Gold Delta.
+GOLD LAYER — Batch transformation: Silver Delta -> Gold Delta.
 See processing/README.md for full documentation.
 
-Four output tables (all partitioned by event_date):
-  daily_vitals_summary    – daily BPM / temperature / SCL stats per patient
-  daily_activity_summary  – daily steps / calories / zone minutes + step-goal compliance
-  daily_context_summary   – daily mood burden + mindfulness sessions
-  daily_wellness_profile  – one row per patient per day joining all three above + demographics
+Outputs are partitioned by event_date and include daily summary tables for
+vitals, activity, context, sleep, intraday signals, daily vitals, plus a
+consolidated daily_wellness_profile for dashboarding and downstream use.
 
 Run:
-    make run-gold
+        make run-gold
 """
+
+from __future__ import annotations
 
 import os
 
@@ -39,6 +39,7 @@ from pyspark.sql.window import Window
 HDFS_SILVER_BASE   = os.getenv("HDFS_SILVER_BASE", "hdfs://namenode:9000/data/silver/wearable")
 HDFS_GOLD_BASE     = os.getenv("HDFS_GOLD_BASE",   "hdfs://namenode:9000/data/gold/wearable")
 SHUFFLE_PARTITIONS = os.getenv("SHUFFLE_PARTITIONS", "4")
+USER_DAY_KEYS      = ["user_id", "event_date"]
 
 # ── Session ───────────────────────────────────────────────────────────────────
 spark = (
@@ -83,6 +84,18 @@ def write_gold(df: DataFrame, name: str) -> None:
     )
 
 
+def _aggregate_daily(df: DataFrame, *agg_exprs) -> DataFrame:
+    """Aggregate a Silver or Gold DataFrame to one row per user per day."""
+    return df.groupBy(*USER_DAY_KEYS).agg(*agg_exprs)
+
+
+def _finalize_gold(df: DataFrame, name: str) -> None:
+    """Attach the audit timestamp, write the Gold table, and emit a completion log."""
+    audited = df.withColumn("gold_updated_at", current_timestamp())
+    write_gold(audited, name)
+    print(f"[gold] {name} — done")
+
+
 def _dominant(df: DataFrame, hour_col_prefix: str, candidates: list[str]) -> DataFrame:
     """
     Add a `dominant_<hour_col_prefix>` column holding the candidate name with
@@ -118,6 +131,42 @@ def _mode_col(df: DataFrame, group_cols: list, value_col: str, out_alias: str) -
     )
 
 
+def _build_spine(dfs: list[DataFrame | None]) -> DataFrame:
+    """Return distinct (user_id, event_date) keys across all provided DataFrames."""
+    key_dfs = [df.select(*USER_DAY_KEYS) for df in dfs if df is not None]
+    if not key_dfs:
+        raise ValueError("At least one DataFrame is required to build a Gold spine")
+
+    spine = key_dfs[0]
+    for df in key_dfs[1:]:
+        spine = spine.union(df)
+    return spine.distinct()
+
+
+def _join_daily_metrics(base_df: DataFrame, source_df: DataFrame | None, metric_cols: list[str]) -> DataFrame:
+    """Left-join event_date scoped metrics when the upstream table exists."""
+    if source_df is None:
+        return base_df
+
+    return base_df.join(
+        source_df.select(*USER_DAY_KEYS, *metric_cols),
+        on=USER_DAY_KEYS,
+        how="left",
+    )
+
+
+def _join_user_profile(base_df: DataFrame, profile_df: DataFrame | None, profile_cols: list[str]) -> DataFrame:
+    """Left-join user profile attributes when the profile Silver table exists."""
+    if profile_df is None:
+        return base_df
+
+    return base_df.join(
+        profile_df.select("user_id", *profile_cols),
+        on="user_id",
+        how="left",
+    )
+
+
 # ── Gold Table 1: daily_vitals_summary ───────────────────────────────────────
 def build_daily_vitals_summary() -> None:
     silver = read_silver("vitals")
@@ -126,8 +175,8 @@ def build_daily_vitals_summary() -> None:
 
     # One row per (user_id, event_date, event_hour) from Silver — aggregate directly to daily.
     daily = (
-        silver.groupBy("user_id", "event_date")
-        .agg(
+        _aggregate_daily(
+            silver,
             avg("bpm").alias("avg_bpm"),
             spark_min("bpm").alias("min_bpm"),
             spark_max("bpm").alias("max_bpm"),
@@ -139,11 +188,9 @@ def build_daily_vitals_summary() -> None:
             spark_max("scl_avg").alias("max_scl"),
             count("event_hour").alias("vitals_hours_recorded"),
         )
-        .withColumn("gold_updated_at", current_timestamp())
     )
 
-    write_gold(daily, "daily_vitals_summary")
-    print("[gold] daily_vitals_summary — done")
+    _finalize_gold(daily, "daily_vitals_summary")
 
 
 # ── Gold Table 2: daily_activity_summary ─────────────────────────────────────
@@ -160,8 +207,8 @@ def build_daily_activity_summary() -> None:
 
     # One row per (user_id, event_date, event_hour) — aggregate directly to daily.
     daily = (
-        silver_activity.groupBy("user_id", "event_date")
-        .agg(
+        _aggregate_daily(
+            silver_activity,
             spark_sum("steps").cast(IntegerType()).alias("total_steps"),
             spark_sum("calories").alias("total_calories"),
             spark_sum("distance").alias("total_distance_m"),
@@ -179,7 +226,7 @@ def build_daily_activity_summary() -> None:
                 + coalesce(col("total_minutes_zone_3"), lit(0))
             ).cast(IntegerType()),
         )
-        .join(dominant_type, on=["user_id", "event_date"], how="left")
+        .join(dominant_type, on=USER_DAY_KEYS, how="left")
     )
 
     # Step-goal compliance — only for users who have a step_goal set in profile
@@ -203,9 +250,7 @@ def build_daily_activity_summary() -> None:
     else:
         daily = daily.withColumn("goal_met_steps", lit(None).cast(BooleanType()))
 
-    daily = daily.withColumn("gold_updated_at", current_timestamp())
-    write_gold(daily, "daily_activity_summary")
-    print("[gold] daily_activity_summary — done")
+    _finalize_gold(daily, "daily_activity_summary")
 
 
 # ── Gold Table 3: daily_context_summary ──────────────────────────────────────
@@ -224,100 +269,233 @@ def build_daily_context_summary() -> None:
         spark_sum(col("mindfulness_session").cast(IntegerType())).alias("mindfulness_sessions"),
         count("event_hour").alias("sema_readings_count"),
     ]
-    daily = silver.groupBy("user_id", "event_date").agg(*daily_exprs)
+    daily = _aggregate_daily(silver, *daily_exprs)
 
     # Dominant mood: mood with the highest hours count for the day
     daily = _dominant(daily, "hours_", mood_cols)
 
-    daily = daily.withColumn("gold_updated_at", current_timestamp())
-    write_gold(daily, "daily_context_summary")
-    print("[gold] daily_context_summary — done")
+    _finalize_gold(daily, "daily_context_summary")
 
 
-# ── Gold Table 4: daily_wellness_profile ─────────────────────────────────────
+# ── Gold Table 4: daily_sleep_summary ────────────────────────────────────────
+def build_daily_sleep_summary() -> None:
+    silver = read_silver("sleep")
+    if silver is None:
+        return
+
+    # Silver/sleep already has one row per (user_id, event_date) — just select
+    # and add the audit timestamp.
+    daily = (
+        _aggregate_daily(
+            silver,
+            avg("sleep_duration_ms").alias("avg_sleep_duration_ms"),
+            avg("sleep_efficiency").alias("avg_sleep_efficiency"),
+            avg("minutes_asleep").alias("avg_minutes_asleep"),
+            avg("minutes_awake").alias("avg_minutes_awake"),
+            avg("sleep_deep_ratio").alias("avg_sleep_deep_ratio"),
+            avg("sleep_rem_ratio").alias("avg_sleep_rem_ratio"),
+            avg("sleep_light_ratio").alias("avg_sleep_light_ratio"),
+        )
+    )
+
+    _finalize_gold(daily, "daily_sleep_summary")
+
+
+# ── Gold Table 5: daily_intraday_summary ─────────────────────────────────────
+def build_daily_intraday_summary() -> None:
+    """
+    Aggregate per-second synthetic readings (heart rate, HRV, breathing) to
+    daily stats per user.  This mirrors the paper's intraday stress-test data
+    processed through the full medallion pipeline.
+    """
+    hr  = read_silver("heart_rate_intraday")
+    hrv = read_silver("hrv_intraday")
+    br  = read_silver("breathing_intraday")
+
+    if hr is None and hrv is None and br is None:
+        print("[gold] daily_intraday_summary — no intraday silver data, skipping.")
+        return
+
+    # Heart rate daily stats
+    if hr is not None:
+        hr_daily = (
+            _aggregate_daily(
+                hr,
+                avg("bpm").alias("intraday_avg_bpm"),
+                spark_min("bpm").alias("intraday_min_bpm"),
+                spark_max("bpm").alias("intraday_max_bpm"),
+                stddev("bpm").alias("intraday_stddev_bpm"),
+                count("bpm").alias("intraday_hr_readings"),
+            )
+        )
+    else:
+        hr_daily = None
+
+    # HRV daily stats
+    if hrv is not None:
+        hrv_daily = (
+            _aggregate_daily(
+                hrv,
+                avg("rmssd").alias("intraday_avg_rmssd"),
+                spark_min("rmssd").alias("intraday_min_rmssd"),
+                spark_max("rmssd").alias("intraday_max_rmssd"),
+            )
+        )
+    else:
+        hrv_daily = None
+
+    # Breathing daily stats
+    if br is not None:
+        br_daily = (
+            _aggregate_daily(
+                br,
+                avg("breaths_per_minute").alias("intraday_avg_breathing"),
+                spark_min("breaths_per_minute").alias("intraday_min_breathing"),
+                spark_max("breaths_per_minute").alias("intraday_max_breathing"),
+            )
+        )
+    else:
+        br_daily = None
+
+    spine = _build_spine([hr_daily, hrv_daily, br_daily])
+    spine = _join_daily_metrics(
+        spine,
+        hr_daily,
+        [
+            "intraday_avg_bpm",
+            "intraday_min_bpm",
+            "intraday_max_bpm",
+            "intraday_stddev_bpm",
+            "intraday_hr_readings",
+        ],
+    )
+    spine = _join_daily_metrics(
+        spine,
+        hrv_daily,
+        ["intraday_avg_rmssd", "intraday_min_rmssd", "intraday_max_rmssd"],
+    )
+    spine = _join_daily_metrics(
+        spine,
+        br_daily,
+        ["intraday_avg_breathing", "intraday_min_breathing", "intraday_max_breathing"],
+    )
+
+    _finalize_gold(spine, "daily_intraday_summary")
+
+
+# ── Gold Table 6: daily_vitals_daily_summary ──────────────────────────────────
+def build_daily_vitals_daily_summary() -> None:
+    """Aggregate daily vitals (SpO2, stress, resting HR, VO2Max) per user per day."""
+    silver = read_silver("vitals_daily")
+    if silver is None:
+        return
+
+    daily = (
+        _aggregate_daily(
+            silver,
+            avg("spo2").alias("avg_spo2"),
+            avg("stress_score").alias("avg_stress_score"),
+            avg("resting_hr").alias("avg_resting_hr"),
+            avg("vo2max").alias("avg_vo2max"),
+            avg("nightly_temperature").alias("avg_nightly_temperature"),
+            avg("daily_temperature_variation").alias("avg_daily_temp_variation"),
+        )
+    )
+
+    _finalize_gold(daily, "daily_vitals_daily_summary")
+
+
+WELLNESS_SOURCE_COLUMNS = {
+    "daily_vitals_summary": [
+        "avg_bpm",
+        "min_bpm",
+        "max_bpm",
+        "avg_temperature",
+        "avg_scl",
+        "vitals_hours_recorded",
+    ],
+    "daily_activity_summary": [
+        "total_steps",
+        "total_calories",
+        "total_active_minutes",
+        "total_minutes_zone_2",
+        "total_minutes_zone_3",
+        "goal_met_steps",
+        "activity_hours_recorded",
+    ],
+    "daily_context_summary": [
+        "dominant_mood",
+        "mindfulness_sessions",
+        "hours_tense_anxious",
+        "hours_sad",
+        "sema_readings_count",
+    ],
+    "daily_sleep_summary": [
+        "avg_sleep_duration_ms",
+        "avg_sleep_efficiency",
+        "avg_sleep_deep_ratio",
+        "avg_sleep_rem_ratio",
+    ],
+    "daily_intraday_summary": [
+        "intraday_avg_bpm",
+        "intraday_stddev_bpm",
+        "intraday_avg_rmssd",
+        "intraday_avg_breathing",
+        "intraday_hr_readings",
+    ],
+    "daily_vitals_daily_summary": [
+        "avg_spo2",
+        "avg_stress_score",
+        "avg_resting_hr",
+        "avg_vo2max",
+    ],
+}
+WELLNESS_PROFILE_COLUMNS = ["age", "gender", "bmi"]
+
+
+# ── Gold Table 7: daily_wellness_profile ─────────────────────────────────────
 def build_daily_wellness_profile() -> None:
     """
-    Main doctor dashboard table. Joins the three intermediate Gold tables plus
-    profile demographics into one row per patient per day.
+    Main doctor dashboard table. Joins all Gold tables plus profile demographics
+    into one row per patient per day.
 
-    Reads from Gold Delta (not in-memory DataFrames) so this function can be
-    run independently if only one upstream Gold table needs refreshing.
+    Reads from Gold Delta so it can be re-run independently after refreshing
+    one or more upstream Gold tables.
     """
-    vitals   = read_gold("daily_vitals_summary")
-    activity = read_gold("daily_activity_summary")
-    context  = read_gold("daily_context_summary")
-    profile  = read_silver("profile")
+    gold_sources = {
+        source_name: read_gold(source_name)
+        for source_name in WELLNESS_SOURCE_COLUMNS
+    }
+    profile = read_silver("profile")
 
-    if vitals is None and activity is None:
+    upstream_tables = list(gold_sources.values())
+    if not any(df is not None for df in upstream_tables):
         print("[gold] daily_wellness_profile — no upstream Gold data, skipping.")
         return
 
-    # Spine: every (user_id, event_date) across all three Gold tables
-    # so a day with activity but no vitals is still represented
-    spine_dfs = [df.select("user_id", "event_date") for df in [vitals, activity, context] if df is not None]
-    spine = spine_dfs[0]
-    for df in spine_dfs[1:]:
-        spine = spine.union(df)
-    spine = spine.distinct()
+    spine = _build_spine(upstream_tables)
+    for source_name, metric_cols in WELLNESS_SOURCE_COLUMNS.items():
+        spine = _join_daily_metrics(spine, gold_sources[source_name], metric_cols)
+    spine = _join_user_profile(spine, profile, WELLNESS_PROFILE_COLUMNS)
 
-    # Left-join vitals signals
-    if vitals is not None:
-        spine = spine.join(
-            vitals.select(
-                "user_id", "event_date",
-                "avg_bpm", "min_bpm", "max_bpm",
-                "avg_temperature", "avg_scl",
-                "vitals_hours_recorded",
-            ),
-            on=["user_id", "event_date"],
-            how="left",
-        )
+    _finalize_gold(spine, "daily_wellness_profile")
 
-    # Left-join activity signals
-    if activity is not None:
-        spine = spine.join(
-            activity.select(
-                "user_id", "event_date",
-                "total_steps", "total_calories", "total_active_minutes",
-                "total_minutes_zone_2", "total_minutes_zone_3",
-                "goal_met_steps", "activity_hours_recorded",
-            ),
-            on=["user_id", "event_date"],
-            how="left",
-        )
 
-    # Left-join context signals
-    if context is not None:
-        spine = spine.join(
-            context.select(
-                "user_id", "event_date",
-                "dominant_mood", "mindfulness_sessions",
-                "hours_tense_anxious", "hours_sad",
-                "sema_readings_count",
-            ),
-            on=["user_id", "event_date"],
-            how="left",
-        )
-
-    # Left-join profile demographics (user_id only — one row per user, no event_date)
-    if profile is not None:
-        spine = spine.join(
-            profile.select("user_id", "age", "gender", "bmi"),
-            on="user_id",
-            how="left",
-        )
-
-    wellness = spine.withColumn("gold_updated_at", current_timestamp())
-    write_gold(wellness, "daily_wellness_profile")
-    print("[gold] daily_wellness_profile — done")
+GOLD_BUILDERS = (
+    build_daily_vitals_summary,
+    build_daily_activity_summary,
+    build_daily_context_summary,
+    build_daily_sleep_summary,
+    build_daily_vitals_daily_summary,
+    build_daily_intraday_summary,
+    build_daily_wellness_profile,
+)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("[gold] Starting Gold transform …")
-    build_daily_vitals_summary()
-    build_daily_activity_summary()
-    build_daily_context_summary()
-    build_daily_wellness_profile()
+    for builder in GOLD_BUILDERS:
+        builder()
     print("[gold] All Gold tables written.")
     spark.stop()

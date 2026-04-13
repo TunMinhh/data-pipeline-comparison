@@ -15,7 +15,11 @@ HDFS_BRONZE_BASE = os.getenv("HDFS_BRONZE_BASE", "hdfs://namenode:9000/data/bron
 CHECKPOINT_BASE = os.getenv("CHECKPOINT_BASE", "hdfs://namenode:9000/checkpoints/bronze/wearable")
 STARTING_OFFSETS = os.getenv("STARTING_OFFSETS", "earliest")
 
-TOPICS = "wearable.vitals,wearable.activity,wearable.context,wearable.profile"
+TOPICS = (
+    "wearable.vitals,wearable.activity,wearable.context,wearable.profile,"
+    "wearable.sleep,wearable.hrv_summary,wearable.breathing_summary,wearable.vitals_daily,"
+    "wearable.heart_rate_intraday,wearable.hrv_intraday,wearable.breathing_intraday"
+)
 # Default 4 suits a single-node local setup. On a VPS set SHUFFLE_PARTITIONS
 # to 2× the total number of executor cores across all workers.
 SHUFFLE_PARTITIONS = os.getenv("SHUFFLE_PARTITIONS", "4")
@@ -63,10 +67,20 @@ enriched_df = parsed_df.select(
 
 # ── [Bronze] Write raw partitioned Parquet to HDFS Bronze zone ───────────────
 TOPIC_NAMES = {
-    "wearable.vitals": "vitals",
-    "wearable.activity": "activity",
-    "wearable.context": "context",
-    "wearable.profile": "profile",
+    # Hourly producer
+    "wearable.vitals":              "vitals",
+    "wearable.activity":            "activity",
+    "wearable.context":             "context",
+    "wearable.profile":             "profile",
+    # Daily producer
+    "wearable.sleep":               "sleep",
+    "wearable.hrv_summary":         "hrv_summary",
+    "wearable.breathing_summary":   "breathing_summary",
+    "wearable.vitals_daily":        "vitals_daily",
+    # Synthetic real-time producer
+    "wearable.heart_rate_intraday": "heart_rate_intraday",
+    "wearable.hrv_intraday":        "hrv_intraday",
+    "wearable.breathing_intraday":  "breathing_intraday",
 }
 
 
