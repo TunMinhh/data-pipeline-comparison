@@ -13,9 +13,9 @@ Strategy:
      topics, adding small Gaussian noise around the base value.
 
 Topics produced:
-  wearable.heart_rate_intraday  – bpm per second
-  wearable.hrv_intraday         – rmssd per second
-  wearable.breathing_intraday   – breaths per minute, per second
+  wearable_heart_rate_intraday  – bpm per second
+  wearable_hrv_intraday         – rmssd per second
+  wearable_breathing_intraday   – breaths per minute, per second
 
 Run:
     python producer_realtime.py
@@ -49,9 +49,9 @@ DELAY            = float(os.getenv("DELAY",       "0.1"))   # seconds between ti
 USERS_PER_TICK   = os.getenv("USERS_PER_TICK",   None)      # None = all users
 
 TOPICS = [
-    "wearable.heart_rate_intraday",
-    "wearable.hrv_intraday",
-    "wearable.breathing_intraday",
+    "wearable_heart_rate_intraday",
+    "wearable_hrv_intraday",
+    "wearable_breathing_intraday",
 ]
 
 # Physiologically plausible fallback ranges (paper ref [34,35])
@@ -166,17 +166,17 @@ def build_intraday_events(entry: dict, ts: str, trace_id: str, source_timestamp:
     breathing = _noisy(entry["base_breathing"], NOISE_BREATHING,  5.0,  40.0)
 
     return {
-        "wearable.heart_rate_intraday": {
+        "wearable_heart_rate_intraday": {
             **base,
             "event_type": "heart_rate_intraday",
             "payload":    {"bpm": bpm},
         },
-        "wearable.hrv_intraday": {
+        "wearable_hrv_intraday": {
             **base,
             "event_type": "hrv_intraday",
             "payload":    {"rmssd": rmssd},
         },
-        "wearable.breathing_intraday": {
+        "wearable_breathing_intraday": {
             **base,
             "event_type": "breathing_intraday",
             "payload":    {"breaths_per_minute": breathing},

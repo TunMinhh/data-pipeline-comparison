@@ -4,10 +4,10 @@ Daily wearable data producer.
 Reads daily_fitbit_sema_df_unprocessed.csv and publishes to four NEW Kafka topics
 that cover fields not present in the hourly CSV:
 
-  wearable.sleep            – sleep duration, stages, efficiency
-  wearable.hrv_summary      – nremhr, rmssd (nightly HRV)
-  wearable.breathing_summary– full_sleep_breathing_rate
-  wearable.vitals_daily     – spo2, stress_score, resting_hr, VO2Max,
+  wearable_sleep            – sleep duration, stages, efficiency
+  wearable_hrv_summary      – nremhr, rmssd (nightly HRV)
+  wearable_breathing_summary– full_sleep_breathing_rate
+  wearable_vitals_daily     – spo2, stress_score, resting_hr, VO2Max,
                                nightly_temperature, daily_temperature_variation
 
 Does NOT re-publish calories/steps/bpm/SEMA — those come from the hourly producer.
@@ -33,11 +33,11 @@ DAILY_CSV_PATH   = os.getenv("DAILY_CSV_PATH",   "../daily_fitbit_sema_df_unproc
 DELAY = float(os.getenv("DELAY", "1.0"))
 
 TOPICS = [
-    "wearable.sleep",
-    "wearable.hrv_summary",
-    "wearable.breathing_summary",
-    "wearable.vitals_daily",
-    "wearable.profile",          # shared with hourly producer; deduped by user_id
+    "wearable_sleep",
+    "wearable_hrv_summary",
+    "wearable_breathing_summary",
+    "wearable_vitals_daily",
+    "wearable_profile",          # shared with hourly producer; deduped by user_id
 ]
 
 
@@ -63,6 +63,17 @@ def _val(row: dict, key: str):
     return v if v != "" else None
 
 
+def _num(row: dict, key: str):
+    """Return a float for numeric fields, or None if missing/unparseable."""
+    v = row.get(key, "")
+    if v == "" or v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
 def build_events(row: dict) -> dict[str, dict]:
     user_id    = row["id"]
     event_date = row.get("date", "")
@@ -79,16 +90,16 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "sleep",
         "payload": {
-            "sleep_duration":         _val(row, "sleep_duration"),
-            "minutes_to_fall_asleep": _val(row, "minutesToFallAsleep"),
-            "minutes_asleep":         _val(row, "minutesAsleep"),
-            "minutes_awake":          _val(row, "minutesAwake"),
-            "minutes_after_wakeup":   _val(row, "minutesAfterWakeup"),
-            "sleep_efficiency":       _val(row, "sleep_efficiency"),
-            "sleep_deep_ratio":       _val(row, "sleep_deep_ratio"),
-            "sleep_wake_ratio":       _val(row, "sleep_wake_ratio"),
-            "sleep_light_ratio":      _val(row, "sleep_light_ratio"),
-            "sleep_rem_ratio":        _val(row, "sleep_rem_ratio"),
+            "sleep_duration":         _num(row, "sleep_duration"),
+            "minutes_to_fall_asleep": _num(row, "minutesToFallAsleep"),
+            "minutes_asleep":         _num(row, "minutesAsleep"),
+            "minutes_awake":          _num(row, "minutesAwake"),
+            "minutes_after_wakeup":   _num(row, "minutesAfterWakeup"),
+            "sleep_efficiency":       _num(row, "sleep_efficiency"),
+            "sleep_deep_ratio":       _num(row, "sleep_deep_ratio"),
+            "sleep_wake_ratio":       _num(row, "sleep_wake_ratio"),
+            "sleep_light_ratio":      _num(row, "sleep_light_ratio"),
+            "sleep_rem_ratio":        _num(row, "sleep_rem_ratio"),
         },
     }
 
@@ -96,8 +107,8 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "hrv_summary",
         "payload": {
-            "nremhr": _val(row, "nremhr"),
-            "rmssd":  _val(row, "rmssd"),
+            "nremhr": _num(row, "nremhr"),
+            "rmssd":  _num(row, "rmssd"),
         },
     }
 
@@ -105,7 +116,7 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "breathing_summary",
         "payload": {
-            "full_sleep_breathing_rate": _val(row, "full_sleep_breathing_rate"),
+            "full_sleep_breathing_rate": _num(row, "full_sleep_breathing_rate"),
         },
     }
 
@@ -113,15 +124,15 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "vitals_daily",
         "payload": {
-            "spo2":                        _val(row, "spo2"),
-            "stress_score":               _val(row, "stress_score"),
-            "resting_hr":                 _val(row, "resting_hr"),
-            "filtered_demographic_vo2max": _val(row, "filteredDemographicVO2Max"),
-            "nightly_temperature":        _val(row, "nightly_temperature"),
-            "daily_temperature_variation":_val(row, "daily_temperature_variation"),
-            "sleep_points_pct":           _val(row, "sleep_points_percentage"),
-            "exertion_points_pct":        _val(row, "exertion_points_percentage"),
-            "responsiveness_points_pct":  _val(row, "responsiveness_points_percentage"),
+            "spo2":                         _num(row, "spo2"),
+            "stress_score":                 _num(row, "stress_score"),
+            "resting_hr":                   _num(row, "resting_hr"),
+            "filtered_demographic_vo2max":  _num(row, "filteredDemographicVO2Max"),
+            "nightly_temperature":          _num(row, "nightly_temperature"),
+            "daily_temperature_variation":  _num(row, "daily_temperature_variation"),
+            "sleep_points_pct":             _num(row, "sleep_points_percentage"),
+            "exertion_points_pct":          _num(row, "exertion_points_percentage"),
+            "responsiveness_points_pct":    _num(row, "responsiveness_points_percentage"),
         },
     }
 
@@ -141,11 +152,11 @@ def build_events(row: dict) -> dict[str, dict]:
     }
 
     return {
-        "wearable.sleep":             sleep,
-        "wearable.hrv_summary":       hrv_summary,
-        "wearable.breathing_summary": breathing_summary,
-        "wearable.vitals_daily":      vitals_daily,
-        "wearable.profile":           profile,
+        "wearable_sleep":             sleep,
+        "wearable_hrv_summary":       hrv_summary,
+        "wearable_breathing_summary": breathing_summary,
+        "wearable_vitals_daily":      vitals_daily,
+        "wearable_profile":           profile,
     }
 
 
@@ -177,13 +188,13 @@ def main() -> None:
 
                 events = build_events(row)
 
-                for topic in ("wearable.sleep", "wearable.hrv_summary",
-                              "wearable.breathing_summary", "wearable.vitals_daily"):
+                for topic in ("wearable_sleep", "wearable_hrv_summary",
+                              "wearable_breathing_summary", "wearable_vitals_daily"):
                     producer.produce(topic, key=user_id, value=serialize(events[topic]))
 
                 if user_id not in seen_profiles:
-                    producer.produce("wearable.profile", key=user_id,
-                                     value=serialize(events["wearable.profile"]))
+                    producer.produce("wearable_profile", key=user_id,
+                                     value=serialize(events["wearable_profile"]))
                     seen_profiles.add(user_id)
 
                 row_count += 1

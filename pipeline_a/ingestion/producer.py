@@ -2,10 +2,10 @@
 Wearable data streaming simulator.
 
 Reads hourly_fitbit_sema_df_unprocessed.csv and publishes events to four Kafka topics:
-  wearable.vitals   – bpm, temperature, scl_avg
-  wearable.activity – calories, distance, steps, activity type, zone minutes
-  wearable.context  – mood labels, location labels, mindfulness
-  wearable.profile  – demographic / goal fields (sent once per unique user)
+  wearable_vitals   – bpm, temperature, scl_avg
+  wearable_activity – calories, distance, steps, activity type, zone minutes
+  wearable_context  – mood labels, location labels, mindfulness
+  wearable_profile  – demographic / goal fields (sent once per unique user)
 
 Run:
     python producer.py                         # default settings
@@ -27,10 +27,10 @@ CSV_PATH = os.getenv("CSV_PATH", "../hourly_fitbit_sema_df_unprocessed.csv")
 DELAY = float(os.getenv("DELAY", "0.1"))
 
 TOPICS = [
-    "wearable.vitals",
-    "wearable.activity",
-    "wearable.context",
-    "wearable.profile",
+    "wearable_vitals",
+    "wearable_activity",
+    "wearable_context",
+    "wearable_profile",
 ]
 
 
@@ -57,6 +57,17 @@ def _val(row: dict, key: str):
     return v if v != "" else None
 
 
+def _num(row: dict, key: str):
+    """Return a float for numeric fields, or None if missing/unparseable."""
+    v = row.get(key, "")
+    if v == "" or v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
 def build_events(row: dict) -> dict[str, dict]:
     user_id = row["id"]
     event_date = row.get("date", "")
@@ -78,9 +89,9 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "vitals",
         "payload": {
-            "bpm": _val(row, "bpm"),
-            "temperature": _val(row, "temperature"),
-            "scl_avg": _val(row, "scl_avg"),
+            "bpm": _num(row, "bpm"),
+            "temperature": _num(row, "temperature"),
+            "scl_avg": _num(row, "scl_avg"),
         },
     }
 
@@ -88,14 +99,14 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "activity",
         "payload": {
-            "calories": _val(row, "calories"),
-            "distance": _val(row, "distance"),
-            "steps": _val(row, "steps"),
+            "calories": _num(row, "calories"),
+            "distance": _num(row, "distance"),
+            "steps": _num(row, "steps"),
             "activityType": _val(row, "activityType"),
-            "minutes_in_default_zone_1": _val(row, "minutes_in_default_zone_1"),
-            "minutes_in_default_zone_2": _val(row, "minutes_in_default_zone_2"),
-            "minutes_in_default_zone_3": _val(row, "minutes_in_default_zone_3"),
-            "minutes_below_default_zone_1": _val(row, "minutes_below_default_zone_1"),
+            "minutes_in_default_zone_1": _num(row, "minutes_in_default_zone_1"),
+            "minutes_in_default_zone_2": _num(row, "minutes_in_default_zone_2"),
+            "minutes_in_default_zone_3": _num(row, "minutes_in_default_zone_3"),
+            "minutes_below_default_zone_1": _num(row, "minutes_below_default_zone_1"),
         },
     }
 
@@ -103,22 +114,22 @@ def build_events(row: dict) -> dict[str, dict]:
         **base,
         "event_type": "context",
         "payload": {
-            "mindfulness_session": _val(row, "mindfulness_session"),
-            "ALERT": _val(row, "ALERT"),
-            "HAPPY": _val(row, "HAPPY"),
-            "NEUTRAL": _val(row, "NEUTRAL"),
-            "RESTED_RELAXED": _val(row, "RESTED/RELAXED"),
-            "SAD": _val(row, "SAD"),
-            "TENSE_ANXIOUS": _val(row, "TENSE/ANXIOUS"),
-            "TIRED": _val(row, "TIRED"),
-            "ENTERTAINMENT": _val(row, "ENTERTAINMENT"),
-            "GYM": _val(row, "GYM"),
-            "HOME": _val(row, "HOME"),
-            "HOME_OFFICE": _val(row, "HOME_OFFICE"),
-            "OTHER": _val(row, "OTHER"),
-            "OUTDOORS": _val(row, "OUTDOORS"),
-            "TRANSIT": _val(row, "TRANSIT"),
-            "WORK_SCHOOL": _val(row, "WORK/SCHOOL"),
+            "mindfulness_session": _val(row, "mindfulness_session"),  # "True"/"False" string → BooleanType in Silver
+            "ALERT": _num(row, "ALERT"),
+            "HAPPY": _num(row, "HAPPY"),
+            "NEUTRAL": _num(row, "NEUTRAL"),
+            "RESTED_RELAXED": _num(row, "RESTED/RELAXED"),
+            "SAD": _num(row, "SAD"),
+            "TENSE_ANXIOUS": _num(row, "TENSE/ANXIOUS"),
+            "TIRED": _num(row, "TIRED"),
+            "ENTERTAINMENT": _num(row, "ENTERTAINMENT"),
+            "GYM": _num(row, "GYM"),
+            "HOME": _num(row, "HOME"),
+            "HOME_OFFICE": _num(row, "HOME_OFFICE"),
+            "OTHER": _num(row, "OTHER"),
+            "OUTDOORS": _num(row, "OUTDOORS"),
+            "TRANSIT": _num(row, "TRANSIT"),
+            "WORK_SCHOOL": _num(row, "WORK/SCHOOL"),
         },
     }
 
@@ -138,10 +149,10 @@ def build_events(row: dict) -> dict[str, dict]:
     }
 
     return {
-        "wearable.vitals": vitals,
-        "wearable.activity": activity,
-        "wearable.context": context,
-        "wearable.profile": profile,
+        "wearable_vitals": vitals,
+        "wearable_activity": activity,
+        "wearable_context": context,
+        "wearable_profile": profile,
     }
 
 
@@ -174,12 +185,12 @@ def main() -> None:
                 events = build_events(row)
 
                 # Always publish vitals, activity, context
-                for topic in ("wearable.vitals", "wearable.activity", "wearable.context"):
+                for topic in ("wearable_vitals", "wearable_activity", "wearable_context"):
                     producer.produce(topic, key=user_id, value=serialize(events[topic]))
 
                 # Publish profile only once per user to avoid redundant demographic spam
                 if user_id not in seen_profiles:
-                    producer.produce("wearable.profile", key=user_id, value=serialize(events["wearable.profile"]))
+                    producer.produce("wearable_profile", key=user_id, value=serialize(events["wearable_profile"]))
                     seen_profiles.add(user_id)
 
                 row_count += 1

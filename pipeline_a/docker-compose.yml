@@ -10,7 +10,8 @@ services:
       - "9000:9000"
     volumes:
       - namenode_data:/hadoop/dfs/name
-    mem_limit: 512m
+    mem_limit: 640m       # NN JVM heap + metadata index + headroom
+    memswap_limit: 640m   # disable swap — OOM is preferable to swap thrash
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9870/ || exit 1"]
@@ -27,14 +28,15 @@ services:
     depends_on:
       namenode:
         condition: service_healthy
-    mem_limit: 512m
+    mem_limit: 768m       # block transfer buffers + JVM GC headroom
+    memswap_limit: 768m
     restart: unless-stopped
 
-  # ===== Kafka (KRaft mode) =====
+  # ===== Kafka (KRaft mode, no ZooKeeper) =====
   kafka:
-    image: apache/kafka:3.7.0 
+    image: apache/kafka:3.7.0
     hostname: kafka
-    user: "root" # Temporary workaround for permission issues with log directories
+    user: "root"  # workaround for log-dir permission issues
     environment:
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
@@ -50,12 +52,15 @@ services:
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
       - KAFKA_LOG_DIRS=/tmp/kraft-combined-logs
       - CLUSTER_ID=4L6g3nShT-eMCtK--X86sw
-      - KAFKA_JVM_PERFORMANCE_OPTS=-Xmx256m -Xms256m
+      # Heap: 512m lets the broker handle 11 topics × 3 partitions + metadata comfortably.
+      # The remaining ~512m in the 1g container serves OS page cache (Kafka's hot path).
+      - KAFKA_JVM_PERFORMANCE_OPTS=-Xmx512m -Xms256m
     ports:
       - "9092:9092"
     volumes:
       - kafka_data:/tmp/kraft-combined-logs
-    mem_limit: 512m
+    mem_limit: 1g
+    memswap_limit: 1g
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "cd /opt/kafka/bin && ./kafka-topics.sh --bootstrap-server localhost:19092 --list >/dev/null 2>&1 || exit 1"]
@@ -72,7 +77,9 @@ services:
       - "8080:8080"
     volumes:
       - ./processing:/opt/spark/work-dir
-    mem_limit: 512m
+    # master daemon (~210m) + driver process (256m heap + ~30m overhead) + headroom
+    mem_limit: 1200m
+    memswap_limit: 1200m
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
@@ -88,7 +95,16 @@ services:
         condition: service_healthy
     volumes:
       - ./processing:/opt/spark/work-dir
-    mem_limit: 1024m
+    # Memory budget for the heaviest job (Gold):
+    #   executor heap   : 1024m  (MEM_GOLD)
+    #   executor overhead:  768m  (spark.executor.memoryOverhead — explicit in Makefile)
+    #   worker daemon   :  ~256m
+    #   buffer          :  ~952m
+    #   ─────────────────────────
+    #   total           :  3g
+    # Bronze/Silver (512m executor + 512m overhead + 256m daemon) fit well within this.
+    mem_limit: 3g
+    memswap_limit: 3g
     restart: unless-stopped
 
   # ===== PostgreSQL (Airflow metadata DB) =====
@@ -102,7 +118,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    mem_limit: 256m
+    mem_limit: 256m       # metadata only
+    memswap_limit: 256m
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d airflow_db"]
@@ -110,7 +127,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ===== Airflow =====
+  # ===== Airflow (webserver + scheduler, LocalExecutor) =====
   airflow:
     image: apache/airflow:2.7.1-python3.10
     environment:
@@ -134,7 +151,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    mem_limit: 1536m
+    # 2g covers: webserver (~512m) + scheduler (~512m) + LocalExecutor task processes (~512m) + headroom
+    mem_limit: 2g
+    memswap_limit: 2g
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()\""]

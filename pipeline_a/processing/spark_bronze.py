@@ -16,9 +16,9 @@ CHECKPOINT_BASE = os.getenv("CHECKPOINT_BASE", "hdfs://namenode:9000/checkpoints
 STARTING_OFFSETS = os.getenv("STARTING_OFFSETS", "earliest")
 
 TOPICS = (
-    "wearable.vitals,wearable.activity,wearable.context,wearable.profile,"
-    "wearable.sleep,wearable.hrv_summary,wearable.breathing_summary,wearable.vitals_daily,"
-    "wearable.heart_rate_intraday,wearable.hrv_intraday,wearable.breathing_intraday"
+    "wearable_vitals,wearable_activity,wearable_context,wearable_profile,"
+    "wearable_sleep,wearable_hrv_summary,wearable_breathing_summary,wearable_vitals_daily,"
+    "wearable_heart_rate_intraday,wearable_hrv_intraday,wearable_breathing_intraday"
 )
 # Default 4 suits a single-node local setup. On a VPS set SHUFFLE_PARTITIONS
 # to 2× the total number of executor cores across all workers.
@@ -70,19 +70,19 @@ enriched_df = parsed_df.select(
 # ── [Bronze] Write raw partitioned Parquet to HDFS Bronze zone ───────────────
 TOPIC_NAMES = {
     # Hourly producer
-    "wearable.vitals":              "vitals",
-    "wearable.activity":            "activity",
-    "wearable.context":             "context",
-    "wearable.profile":             "profile",
+    "wearable_vitals":              "vitals",
+    "wearable_activity":            "activity",
+    "wearable_context":             "context",
+    "wearable_profile":             "profile",
     # Daily producer
-    "wearable.sleep":               "sleep",
-    "wearable.hrv_summary":         "hrv_summary",
-    "wearable.breathing_summary":   "breathing_summary",
-    "wearable.vitals_daily":        "vitals_daily",
+    "wearable_sleep":               "sleep",
+    "wearable_hrv_summary":         "hrv_summary",
+    "wearable_breathing_summary":   "breathing_summary",
+    "wearable_vitals_daily":        "vitals_daily",
     # Synthetic real-time producer
-    "wearable.heart_rate_intraday": "heart_rate_intraday",
-    "wearable.hrv_intraday":        "hrv_intraday",
-    "wearable.breathing_intraday":  "breathing_intraday",
+    "wearable_heart_rate_intraday": "heart_rate_intraday",
+    "wearable_hrv_intraday":        "hrv_intraday",
+    "wearable_breathing_intraday":  "breathing_intraday",
 }
 
 

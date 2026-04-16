@@ -272,7 +272,7 @@ def build_daily_context_summary() -> None:
     daily = _aggregate_daily(silver, *daily_exprs)
 
     # Dominant mood: mood with the highest hours count for the day
-    daily = _dominant(daily, "hours_", mood_cols)
+    daily = _dominant(daily, "hours_", mood_cols).withColumnRenamed("dominant_hours", "dominant_mood")
 
     _finalize_gold(daily, "daily_context_summary")
 
