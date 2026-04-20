@@ -6,8 +6,8 @@ services:
       - CLUSTER_NAME=basePipeline-cluster
       - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
     ports:
-      - "9870:9870"
-      - "9000:9000"
+      - "127.0.0.1:9870:9870"   # HDFS NameNode UI
+      - "127.0.0.1:9000:9000"   # HDFS RPC (only needed if connecting from host)
     volumes:
       - namenode_data:/hadoop/dfs/name
     mem_limit: 640m       # NN JVM heap + metadata index + headroom
@@ -51,12 +51,12 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
       - KAFKA_LOG_DIRS=/tmp/kraft-combined-logs
-      - CLUSTER_ID=4L6g3nShT-eMCtK--X86sw
+      - CLUSTER_ID=${KAFKA_CLUSTER_ID}
       # Heap: 512m lets the broker handle 11 topics × 3 partitions + metadata comfortably.
       # The remaining ~512m in the 1g container serves OS page cache (Kafka's hot path).
       - KAFKA_JVM_PERFORMANCE_OPTS=-Xmx512m -Xms256m
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"   # Kafka broker — producers must run on the same host, or use SSH tunnel
     volumes:
       - kafka_data:/tmp/kraft-combined-logs
     mem_limit: 1g
@@ -73,8 +73,8 @@ services:
     image: apache/spark:3.5.1
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "0.0.0.0"]
     ports:
-      - "7077:7077"
-      - "8080:8080"
+      - "127.0.0.1:7077:7077"   # Spark master RPC
+      - "127.0.0.1:8080:8080"   # Spark master UI
     volumes:
       - ./processing:/opt/spark/work-dir
     # master daemon (~210m) + driver process (256m heap + ~30m overhead) + headroom
@@ -107,47 +107,160 @@ services:
     memswap_limit: 3g
     restart: unless-stopped
 
-  # ===== PostgreSQL (Airflow metadata DB) =====
+  # ===== PostgreSQL (Airflow + MLflow metadata DB) =====
   postgres:
     image: postgres:13-alpine
     environment:
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=pwd12345
-      - POSTGRES_DB=airflow_db
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5433:5432"   # Postgres — host 5433 (5432 collides with a locally-installed Postgres)
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    mem_limit: 256m       # metadata only
-    memswap_limit: 256m
+    mem_limit: 384m       # Airflow metadata + MLflow metadata
+    memswap_limit: 384m
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d airflow_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # One-shot: create mlflow_db in the shared postgres instance.
+  postgres-init:
+    image: postgres:13-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+      - PGUSER=${POSTGRES_USER}
+      - PGDATABASE=${POSTGRES_DB}
+    entrypoint: >
+      sh -c "
+        psql -h postgres -tc \"SELECT 1 FROM pg_database WHERE datname='mlflow_db'\" | grep -q 1 \
+        || psql -h postgres -c 'CREATE DATABASE mlflow_db';
+        echo '[postgres-init] mlflow_db ready.'
+      "
+    restart: "no"
+
+  # ===== MinIO (S3-compatible artifact storage for MLflow) =====
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:9100:9000"   # MinIO S3 API (9000 conflicts with HDFS namenode on host)
+      - "127.0.0.1:9101:9001"   # MinIO Web console
+    volumes:
+      - minio_data:/data
+    mem_limit: 512m
+    memswap_limit: 512m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # One-shot: create the "mlflow" bucket inside MinIO.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    entrypoint: >
+      sh -c "
+        until mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
+          echo '[minio-init] waiting for MinIO...' && sleep 2;
+        done;
+        mc mb --ignore-existing local/mlflow;
+        echo '[minio-init] mlflow bucket ready.'
+      "
+    restart: "no"
+
+  # ===== MLflow (experiment tracking + model registry) =====
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.10.2
+    command: >
+      bash -c "
+        pip install --quiet psycopg2-binary boto3 >/dev/null 2>&1 &&
+        exec mlflow server
+          --host 0.0.0.0
+          --port 5000
+          --backend-store-uri postgresql+psycopg2://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/mlflow_db
+          --default-artifact-root s3://mlflow/
+      "
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    ports:
+      - "127.0.0.1:5000:5000"   # MLflow UI + API
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    memswap_limit: 1g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health').read()\" || exit 1"]
+      start_period: 60s
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
   # ===== Airflow (webserver + scheduler, LocalExecutor) =====
   airflow:
     image: apache/airflow:2.7.1-python3.10
+    # Run as root so the container can access the mounted Docker socket.
+    # The DAG uses BashOperator + `docker exec` to run spark-submit against
+    # the spark-master container (same pattern as the Makefile).
+    user: "0:0"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin:pwd12345@postgres:5432/airflow_db
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=False
       - AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK=True
+      - _AIRFLOW_ADMIN_USER=${AIRFLOW_ADMIN_USER}
+      - _AIRFLOW_ADMIN_PASSWORD=${AIRFLOW_ADMIN_PASSWORD}
+      - _AIRFLOW_ADMIN_EMAIL=${AIRFLOW_ADMIN_EMAIL}
+      - _AIRFLOW_ADMIN_FIRSTNAME=${AIRFLOW_ADMIN_FIRSTNAME}
+      - _AIRFLOW_ADMIN_LASTNAME=${AIRFLOW_ADMIN_LASTNAME}
     command: >
       bash -c "
         set -e
+        # Install docker CLI so BashOperator can run `docker exec` on sibling containers.
+        if ! command -v docker >/dev/null 2>&1; then
+          apt-get update -qq && apt-get install -y -qq docker.io >/dev/null
+        fi
         airflow db migrate
-        airflow users create --username admin --password pwd12345 --firstname Minh --lastname Tran --role Admin --email tranminhkhang1811@gmail.com || true
+        airflow users create \
+          --username \"$$_AIRFLOW_ADMIN_USER\" \
+          --password \"$$_AIRFLOW_ADMIN_PASSWORD\" \
+          --firstname \"$$_AIRFLOW_ADMIN_FIRSTNAME\" \
+          --lastname \"$$_AIRFLOW_ADMIN_LASTNAME\" \
+          --role Admin \
+          --email \"$$_AIRFLOW_ADMIN_EMAIL\" || true
         airflow scheduler &
         exec airflow webserver
       "
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"   # Airflow UI
     volumes:
       - ./orchestration/dags:/opt/airflow/dags
+      - /var/run/docker.sock:/var/run/docker.sock    # required for `docker exec` from DAG tasks
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,3 +280,4 @@ volumes:
   datanode_data:
   postgres_data:
   kafka_data:
+  minio_data:
