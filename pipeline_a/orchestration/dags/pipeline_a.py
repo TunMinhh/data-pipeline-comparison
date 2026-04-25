@@ -117,11 +117,13 @@ with DAG(
         task_id="if_new_data",
     )
 
-    # 5 - Request AI training -- Phase 3 placeholder
-    #     Will become: curl -X POST http://fastapi:8000/train
+    # 5 - Request AI training: call FastAPI /train endpoint.
+    #     FastAPI runs training in a background thread and returns {job_id, status}
+    #     immediately, so this task doesn't block on the full training run.
+    #     Airflow resolves the `fastapi` service name via the compose network.
     request_ai_training = BashOperator(
         task_id="request_ai_training",
-        bash_command='echo "[DAG] AI training -- placeholder (Phase 3)"',
+        bash_command='curl -sf -X POST http://fastapi:8000/train',
     )
 
     # 6 - Compute statistics: Silver -> Gold

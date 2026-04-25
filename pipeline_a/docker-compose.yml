@@ -10,8 +10,8 @@ services:
       - "127.0.0.1:9000:9000"   # HDFS RPC (only needed if connecting from host)
     volumes:
       - namenode_data:/hadoop/dfs/name
-    mem_limit: 640m       # NN JVM heap + metadata index + headroom
-    memswap_limit: 640m   # disable swap — OOM is preferable to swap thrash
+    mem_limit: 896m       # NN JVM heap + metadata index + headroom
+    memswap_limit: 896m   # disable swap — OOM is preferable to swap thrash
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9870/ || exit 1"]
@@ -137,12 +137,13 @@ services:
       - PGPASSWORD=${POSTGRES_PASSWORD}
       - PGUSER=${POSTGRES_USER}
       - PGDATABASE=${POSTGRES_DB}
-    entrypoint: >
-      sh -c "
-        psql -h postgres -tc \"SELECT 1 FROM pg_database WHERE datname='mlflow_db'\" | grep -q 1 \
-        || psql -h postgres -c 'CREATE DATABASE mlflow_db';
+    entrypoint:
+      - sh
+      - -c
+      - |
+        psql -h postgres -tc "SELECT 1 FROM pg_database WHERE datname='mlflow_db'" | grep -q 1 \
+        || psql -h postgres -c 'CREATE DATABASE mlflow_db'
         echo '[postgres-init] mlflow_db ready.'
-      "
     restart: "no"
 
   # ===== MinIO (S3-compatible artifact storage for MLflow) =====
@@ -188,15 +189,16 @@ services:
   # ===== MLflow (experiment tracking + model registry) =====
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.10.2
-    command: >
-      bash -c "
-        pip install --quiet psycopg2-binary boto3 >/dev/null 2>&1 &&
-        exec mlflow server
-          --host 0.0.0.0
-          --port 5000
-          --backend-store-uri postgresql+psycopg2://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/mlflow_db
-          --default-artifact-root s3://mlflow/
-      "
+    command:
+      - bash
+      - -c
+      - |
+          pip install --quiet psycopg2-binary boto3 >/dev/null 2>&1 &&
+          exec mlflow server \
+            --host 0.0.0.0 \
+            --port 5000 \
+            --backend-store-uri "postgresql+psycopg2://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/mlflow_db" \
+            --default-artifact-root s3://mlflow/
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -220,6 +222,34 @@ services:
       timeout: 10s
       retries: 10
 
+  # ===== FastAPI (AttentionLSTM training + inference) =====
+  fastapi:
+    build: ./ml_module
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - HDFS_SILVER_BASE=hdfs://namenode:9000/data/silver/wearable
+      - HDFS_GOLD_BASE=hdfs://namenode:9000/data/gold/wearable
+      - EPOCHS=15
+    ports:
+      - "127.0.0.1:8000:8000"   # FastAPI — /train, /predict, /health
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+    mem_limit: 3g              # PyTorch + PySpark local driver + data in memory
+    memswap_limit: 3g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      start_period: 60s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
   # ===== Airflow (webserver + scheduler, LocalExecutor) =====
   airflow:
     image: apache/airflow:2.7.1-python3.10
@@ -238,24 +268,24 @@ services:
       - _AIRFLOW_ADMIN_EMAIL=${AIRFLOW_ADMIN_EMAIL}
       - _AIRFLOW_ADMIN_FIRSTNAME=${AIRFLOW_ADMIN_FIRSTNAME}
       - _AIRFLOW_ADMIN_LASTNAME=${AIRFLOW_ADMIN_LASTNAME}
-    command: >
-      bash -c "
-        set -e
-        # Install docker CLI so BashOperator can run `docker exec` on sibling containers.
-        if ! command -v docker >/dev/null 2>&1; then
-          apt-get update -qq && apt-get install -y -qq docker.io >/dev/null
-        fi
-        airflow db migrate
-        airflow users create \
-          --username \"$$_AIRFLOW_ADMIN_USER\" \
-          --password \"$$_AIRFLOW_ADMIN_PASSWORD\" \
-          --firstname \"$$_AIRFLOW_ADMIN_FIRSTNAME\" \
-          --lastname \"$$_AIRFLOW_ADMIN_LASTNAME\" \
-          --role Admin \
-          --email \"$$_AIRFLOW_ADMIN_EMAIL\" || true
-        airflow scheduler &
-        exec airflow webserver
-      "
+    command:
+      - bash
+      - -c
+      - |
+          set -e
+          if ! command -v docker >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq docker.io >/dev/null
+          fi
+          airflow db migrate
+          airflow users create \
+            --username "$$_AIRFLOW_ADMIN_USER" \
+            --password "$$_AIRFLOW_ADMIN_PASSWORD" \
+            --firstname "$$_AIRFLOW_ADMIN_FIRSTNAME" \
+            --lastname "$$_AIRFLOW_ADMIN_LASTNAME" \
+            --role Admin \
+            --email "$$_AIRFLOW_ADMIN_EMAIL" || true
+          airflow scheduler &
+          exec airflow webserver
     ports:
       - "127.0.0.1:8081:8080"   # Airflow UI
     volumes:
