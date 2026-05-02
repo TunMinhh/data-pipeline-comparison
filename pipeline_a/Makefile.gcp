@@ -1,0 +1,27 @@
+# =============================================================================
+# GCP overrides for Makefile — source this on the GCP VM:
+#   source Makefile.gcp && make silver
+#
+# Or use directly:
+#   make silver SILVER_EXEC=3g SILVER_OVERHEAD=1g SHUFFLE_PARTITIONS=16
+# =============================================================================
+
+# Spark executor memory — tuned for 12g spark-worker on GCP
+DRIVER_MEM      := 1g
+
+BRONZE_EXEC     := 2g
+BRONZE_OVERHEAD := 1g
+
+SILVER_EXEC     := 3g
+SILVER_OVERHEAD := 1g
+
+GOLD_EXEC       := 4g
+GOLD_OVERHEAD   := 2g
+
+# 2 × 8 vCPU cores = 16 shuffle partitions
+SHUFFLE_PARTITIONS := 16
+
+# Benchmark settings for GCP (match paper load profile)
+REQUEST_RATES  := 50,500,1500,3000
+N_RUNS         := 3
+WARMUP_SECS    := 60

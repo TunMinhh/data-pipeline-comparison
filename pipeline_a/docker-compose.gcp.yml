@@ -1,0 +1,106 @@
+# =============================================================================
+# GCP override — 32 GB RAM / 8 vCPU
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d
+#
+# Memory budget (32 GB total):
+#   OS + Docker daemon          :  2.0 GB  (reserved)
+#   namenode                    :  2.0 GB
+#   datanode                    :  2.0 GB
+#   kafka                       :  2.0 GB
+#   spark-master                :  2.0 GB
+#   spark-worker                : 12.0 GB  ← main executor
+#   postgres (metadata)         :  0.5 GB
+#   minio                       :  1.0 GB
+#   mlflow                      :  1.0 GB
+#   fastapi                     :  4.0 GB
+#   airflow                     :  2.0 GB
+#   postgres-sink               :  0.5 GB
+#   grafana                     :  0.5 GB
+#   ─────────────────────────────────────
+#   total allocated             : 31.5 GB  (0.5 GB slack)
+#
+# Spark executor budget inside spark-worker (12 GB):
+#   Gold executor heap          :  4 GB
+#   Gold executor overhead      :  2 GB
+#   Silver executor heap        :  3 GB
+#   Silver executor overhead    :  1 GB
+#   worker daemon               :  0.3 GB
+#   buffer                      :  1.7 GB
+# =============================================================================
+
+services:
+  namenode:
+    mem_limit: 2g
+    memswap_limit: 2g
+    environment:
+      - CLUSTER_NAME=basePipeline-cluster
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      # Increase NameNode heap for larger metadata index
+      - HADOOP_HEAPSIZE=1024
+
+  datanode:
+    mem_limit: 2g
+    memswap_limit: 2g
+
+  kafka:
+    mem_limit: 2g
+    memswap_limit: 2g
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:19092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:29093
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_LOG_DIRS=/tmp/kraft-combined-logs
+      - CLUSTER_ID=${KAFKA_CLUSTER_ID}
+      # Increase Kafka JVM heap for higher throughput under load
+      - KAFKA_JVM_PERFORMANCE_OPTS=-Xmx1500m -Xms512m
+
+  spark-master:
+    mem_limit: 2g
+    memswap_limit: 2g
+
+  spark-worker:
+    # 12g allows:
+    #   Gold:   4g executor + 2g overhead = 6g
+    #   Silver: 3g executor + 1g overhead = 4g
+    #   Bronze: 2g executor + 1g overhead = 3g
+    mem_limit: 12g
+    memswap_limit: 12g
+
+  postgres:
+    mem_limit: 512m
+    memswap_limit: 512m
+
+  minio:
+    mem_limit: 1g
+    memswap_limit: 1g
+
+  mlflow:
+    mem_limit: 1g
+    memswap_limit: 1g
+
+  fastapi:
+    mem_limit: 4g
+    memswap_limit: 4g
+
+  airflow:
+    mem_limit: 2g
+    memswap_limit: 2g
+
+  postgres-sink:
+    mem_limit: 512m
+    memswap_limit: 512m
+
+  grafana:
+    mem_limit: 512m
+    memswap_limit: 512m
