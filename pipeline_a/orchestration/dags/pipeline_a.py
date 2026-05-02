@@ -12,9 +12,9 @@ Bronze runs as a persistent Spark Structured Streaming job and is NOT
 triggered by this DAG. The DAG only verifies that Bronze has data, then
 runs Silver (preprocess) and Gold (compute statistics) as batch jobs.
 
-Phase 3 (AI training) and Phase 4 (data export) are placeholders --
-currently echo-only. They will be wired up when FastAPI + MLflow and
-Grafana + PostgreSQL sink are added.
+All phases are wired up: Phase 3 calls FastAPI /train (background thread,
+non-blocking), and Phase 4 (data_exposition) runs spark_gold_to_postgres.py
+to refresh the Grafana-facing PostgreSQL sink.
 """
 
 from datetime import datetime, timedelta
@@ -58,6 +58,15 @@ GOLD_CMD = (
     + "--conf spark.executor.memoryOverhead=768m "
     + "--packages io.delta:delta-spark_2.12:3.2.0 "
     + "/opt/spark/work-dir/spark_gold.py'"
+)
+
+# Phase 4 — Gold Delta -> PostgreSQL sink for Grafana dashboards.
+EXPORT_CMD = (
+    _SPARK_BASE
+    + "--executor-memory 512m "
+    + "--conf spark.executor.memoryOverhead=512m "
+    + "--packages io.delta:delta-spark_2.12:3.2.0,org.postgresql:postgresql:42.7.3 "
+    + "/opt/spark/work-dir/spark_gold_to_postgres.py'"
 )
 
 
@@ -139,11 +148,11 @@ with DAG(
         bash_command=CHECK_GOLD_CMD,
     )
 
-    # 8 - Export Gold -> dashboarding DB -- Phase 4 placeholder
-    #     Will become: Spark job writing Gold Delta -> PostgreSQL sink for Grafana
+    # 8 - Export Gold Delta -> PostgreSQL sink (read by Grafana dashboards).
     data_exposition = BashOperator(
         task_id="data_exposition",
-        bash_command='echo "[DAG] Data export -- placeholder (Phase 4)"',
+        bash_command=EXPORT_CMD,
+        execution_timeout=timedelta(minutes=15),
     )
 
     # 9 - Done

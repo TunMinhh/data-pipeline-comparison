@@ -1,0 +1,19 @@
+apiVersion: 1
+
+# Auto-provisioned datasource: the Postgres sink populated by
+# processing/spark_gold_to_postgres.py.
+datasources:
+  - name: Wellness-Postgres
+    type: postgres
+    access: proxy
+    url: postgres-sink:5432
+    user: ${PG_SINK_USER}
+    secureJsonData:
+      password: ${PG_SINK_PASSWORD}
+    jsonData:
+      database: ${PG_SINK_DB}
+      sslmode: disable
+      postgresVersion: 1300
+      timescaledb: false
+    isDefault: true
+    editable: true
