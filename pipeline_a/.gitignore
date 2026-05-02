@@ -24,4 +24,4 @@ __pycache__/
 *.tmp
 *.swp            
 .claude/
-*.pdf
+*.pdf.env
