@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//mnt/**)",
+      "Read(///wsl.localhost/Ubuntu//**)",
+      "Read(//proc/**)",
+      "Read(///wsl.localhost/Ubuntu/home/minhubuntu/projects/**)",
+      "Read(///wsl.localhost/Ubuntu/home/minhubuntu/**)",
+      "Bash(find /d/DH_CNTT_DHQGHCM -name *.csv)",
+      "Read(///wsl.localhost/Ubuntu/home/minhubuntu/projects/data-pipeline-comparison/pipeline_a/**)",
+      "Bash(tree -L 3 -I '.venv|__pycache__|.git' //wsl.localhost/Ubuntu/home/minhubuntu/projects/data-pipeline-comparison)",
+      "Bash(wsl ls:*)",
+      "Read(///wsl.localhost/Ubuntu/mnt/**)",
+      "Bash(touch /tmp/test.py)",
+      "Bash(rm /tmp/test.py)",
+      "Bash(mount)",
+      "Bash(getfacl orchestration/dags/)",
+      "Bash(wsl.exe --list)",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'whoami && ls -la /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a/orchestration/dags/')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'sudo -n chown -R minhubuntu:minhubuntu /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a/orchestration 2>&1 || echo \"NEED_PASSWORD\"')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'ls -la /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a/orchestration/dags/')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'cd /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a && docker compose up -d airflow 2>&1 | tail -20')",
+      "Bash(docker --version)",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'python3 -c \"import ast; ast.parse\\(open\\(\\\\\"/home/minhubuntu/projects/data-pipeline-comparison/pipeline_a/orchestration/dags/pipeline_a.py\\\\\"\\).read\\(\\)\\); print\\(\\\\\"DAG syntax OK\\\\\"\\)\"')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'cd /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a && python3 -c \"import yaml; d = yaml.safe_load\\(open\\(\\\\\"docker-compose.yml\\\\\"\\)\\); services = list\\(d[\\\\\"services\\\\\"].keys\\(\\)\\); print\\(\\\\\"services:\\\\\", services\\); print\\(\\\\\"volumes:\\\\\", list\\(d[\\\\\"volumes\\\\\"].keys\\(\\)\\)\\)\"')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'grep -E \"mem_limit|^  [a-z].*:$\" /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a/docker-compose.yml | grep -v \"^#\"')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'cd /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a && grep -oE \"\\\\\\\\\\\\$\\\\\\\\{[A-Z_][A-Z0-9_]*\\\\\\\\}\" docker-compose.yml | sort -u')",
+      "Bash(wsl.exe -d Ubuntu -- bash -c 'cd /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a && docker ps 2>&1 | head -5')",
+      "Bash(docker compose *)",
+      "Bash(wsl -d Ubuntu -e bash -c \"cd /home/minhubuntu/projects/data-pipeline-comparison/pipeline_a && docker compose logs postgres-init 2>&1 | tail -30\")",
+      "Bash(python3 -c \"from pyspark.sql import SparkSession; print\\('ok'\\)\")",
+      "Bash(wsl.exe -d Ubuntu -- bash -lc ' *)"
+    ]
+  }
+}
